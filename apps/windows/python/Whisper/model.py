@@ -4,11 +4,22 @@
 # ---------------------------------------------------------------------
 import numpy as np
 import onnxruntime
-from qai_hub_models.models._shared.whisper.model import Whisper
+from qai_hub_models.models._shared.whisper.model import (
+    Whisper,
+    N_MELS,
+    MELS_AUDIO_LEN,
+    MEAN_DECODE_LEN,
+    AUDIO_EMB_LEN,
+)
+from qai_hub_models.utils.base_model import (
+    BasePrecompiledModel,
+)
+from qai_hub_models.utils.input_spec import InputSpec
 
 
 def get_onnxruntime_session_with_qnn_ep(path):
     options = onnxruntime.SessionOptions()
+    options.log_severity_level = 0  # Verbose
     session = onnxruntime.InferenceSession(
         path,
         sess_options=options,
@@ -20,14 +31,17 @@ def get_onnxruntime_session_with_qnn_ep(path):
                 "high_power_saver": "sustained_high_performance",
                 "enable_htp_fp16_precision": "1",
                 "htp_graph_finalization_optimization_mode": "3",
+                "soc_model": 60,
+                "htp_arch": 73,
             }
         ],
     )
     return session
 
 
-class ONNXEncoderWrapper:
+class ONNXEncoderWrapper(BasePrecompiledModel):
     def __init__(self, encoder_path):
+        super().__init__(encoder_path)
         self.session = get_onnxruntime_session_with_qnn_ep(encoder_path)
 
     def to(self, *args):
@@ -36,9 +50,26 @@ class ONNXEncoderWrapper:
     def __call__(self, audio):
         return self.session.run(None, {"audio": audio})
 
+    @staticmethod
+    def get_input_spec() -> InputSpec:
+        """
+        Returns the input specification (name -> (shape, type). This can be
+        used to submit profiling job on Qualcomm AI Hub.
+        """
+        return dict(audio=((1, N_MELS, MELS_AUDIO_LEN), "float32"))
 
-class ONNXDecoderWrapper:
+    @staticmethod
+    def get_output_names() -> list[str]:
+        return ["k_cache", "v_cache"]
+
+    @classmethod
+    def from_precompiled(cls):
+        return cls("WhisperEncoderInf.onnx")
+
+
+class ONNXDecoderWrapper(BasePrecompiledModel):
     def __init__(self, decoder_path):
+        super().__init__(decoder_path)
         self.session = get_onnxruntime_session_with_qnn_ep(decoder_path)
 
     def to(self, *args):
@@ -58,6 +89,45 @@ class ONNXDecoderWrapper:
                 "v_cache_self": v_cache_self,
             },
         )
+
+    @staticmethod
+    def get_input_spec(
+        num_blocks: int, attention_dim: int, num_heads: int
+    ) -> InputSpec:
+        """
+        Returns the input specification (name -> (shape, type). This can be
+        used to submit profiling job on Qualcomm AI Hub.
+        """
+        specs: InputSpec = dict(
+            x=((1, 1), "int32"),
+            index=((1, 1), "int32"),
+            k_cache_cross=(
+                (num_blocks, num_heads, attention_dim // num_heads, AUDIO_EMB_LEN),
+                "float32",
+            ),
+            v_cache_cross=(
+                (num_blocks, num_heads, AUDIO_EMB_LEN, attention_dim // num_heads),
+                "float32",
+            ),
+            k_cache_self=(
+                (num_blocks, num_heads, attention_dim // num_heads, MEAN_DECODE_LEN),
+                "float32",
+            ),
+            v_cache_self=(
+                (num_blocks, num_heads, MEAN_DECODE_LEN, attention_dim // num_heads),
+                "float32",
+            ),
+        )
+
+        return specs
+
+    @staticmethod
+    def get_output_names() -> list[str]:
+        return ["logits", "k_cache", "v_cache"]
+
+    @classmethod
+    def from_precompiled(cls):
+        return cls("WhisperDecoderInf.onnx")
 
 
 class WhisperBaseEnONNX(Whisper):
