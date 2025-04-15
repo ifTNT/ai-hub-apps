@@ -19,10 +19,12 @@ from qai_hub_models.utils.input_spec import InputSpec
 
 def get_onnxruntime_session_with_qnn_ep(path):
     options = onnxruntime.SessionOptions()
-    options.log_severity_level = 0  # Verbose
+    # options.log_severity_level = 0  # Verbose
+    options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
     session = onnxruntime.InferenceSession(
         path,
         sess_options=options,
+        # providers=["CPUExecutionProvider"],
         providers=["QNNExecutionProvider"],
         provider_options=[
             {
@@ -36,6 +38,7 @@ def get_onnxruntime_session_with_qnn_ep(path):
             }
         ],
     )
+    print(f"Using {session.get_providers()}")
     return session
 
 
